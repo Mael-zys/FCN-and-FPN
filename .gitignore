@@ -1,0 +1,11 @@
+__pycache__
+.vscode
+.ipynb_checkpoints
+.spyproject
+.idea
+.tmp
+/Result
+/checkpoints
+/bag_data
+/bag_data_msk
+*.out
