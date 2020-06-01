@@ -9,3 +9,5 @@ __pycache__
 /bag_data
 /bag_data_msk
 *.out
+*.jpg
+*.model

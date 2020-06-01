@@ -7,10 +7,10 @@ import torch.nn as nn
 import torch.optim as optim
 #import visdom
 import cv2
-from BagData import test_dataloader, train_dataloader
-from FCN import FCN8s, FCN16s, FCN32s, FCNs, VGGNet
+from BagData import test_dataloader, train_dataloader, randomcrop, scale_img
+from FPN import FPN
 import os
-
+import shutil
 # 绘制loss变化图，包含了train loss和test loss
 def draw_loss_plot(train_loss_list=[], test_loss_list=[]):
     x1 = range(0, len(train_loss_list))
@@ -26,29 +26,60 @@ def draw_loss_plot(train_loss_list=[], test_loss_list=[]):
     plt.plot(x2, y2, '.-')
     plt.xlabel('test loss vs. iterators')
     plt.ylabel('test loss')
-    plt.savefig("train_loss.png")
+    plt.savefig("train_loss_fpn.png")
 
-model_path='model_test/0.01best.model'
 
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2,alpha=0.25):
+        super(FocalLoss, self).__init__()
+        self.gamma = gamma
+        self.alpha=alpha
+    def forward(self, input, target):
+        # input:size is M*2. M　is the batch　number
+        # target:size is M.
+        pt=torch.softmax(input,dim=1)
+        p=pt[:,1]
+        # p = input[:,1]
+        loss = -self.alpha*(1-p)**self.gamma*(target*torch.log(p))-\
+            (1-self.alpha)*p**self.gamma*((1-target)*torch.log(1-p))
+        return loss.mean()
+
+
+
+
+TRAIN_RESULT = 'Result_fpn/'
+model_path='model_fpn/fcn_2_0.476.model'
 def train(epo_num=50, show_vgg_params=False):
 
     #vis = visdom.Visdom()
     os.environ["CUDA_VISIBLE_DEVICES"] = '3'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(device)
-    vgg_model = VGGNet(requires_grad=True, show_params=show_vgg_params)
-    fcn_model = FCNs(pretrained_net=vgg_model, n_class=2)
+    # res_model = resnet50(True)
+    fcn_model = FPN([2,4,23,3], 2, back_bone="resnet")
     if not torch.cuda.is_available():
         fcn_model.load_state_dict(torch.load(model_path, map_location='cpu'))
     else:
         fcn_model.load_state_dict(torch.load(model_path))
+    # optimizer = optim.Adam(net.parameters(), lr=lr)
     fcn_model = fcn_model.to(device)
+    
     criterion = nn.BCELoss().to(device)
+    
     # criterion = nn.BCEWithLogitsLoss().to(device)
-    optimizer = optim.SGD(fcn_model.parameters(), lr=1e-3, momentum=0.7)
-    # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=6, gamma=0.1)
+    optimizer = optim.Adam(fcn_model.parameters(), lr=1e-4)
+    # optimizer = optim.SGD(fcn_model.parameters(), lr=1e-2, momentum=0.7)
+    # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+    # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [1,6,11], gamma=0.1, last_epoch=-1)
+
     all_train_iter_loss = []
     all_test_iter_loss = []
+
+    if os.path.exists(TRAIN_RESULT):
+        shutil.rmtree(TRAIN_RESULT)
+
+    os.mkdir(TRAIN_RESULT)
 
     # start timing
     prev_time = datetime.now()
@@ -56,17 +87,18 @@ def train(epo_num=50, show_vgg_params=False):
         
         train_loss = 0
         fcn_model.train()
-        for index, (bag, bag_msk) in enumerate(train_dataloader):
+        for index, (bag, bag_msk, nc) in enumerate(train_dataloader):
             # bag.shape is torch.Size([4, 3, 160, 160])
             # bag_msk.shape is torch.Size([4, 2, 160, 160])
 
             bag = bag.to(device)
             bag_msk = bag_msk.to(device)
-
+            nc=nc.to(device)
+            
             optimizer.zero_grad()
             output = fcn_model(bag)
             output = torch.sigmoid(output) # output.shape is torch.Size([4, 2, 160, 160])
-            loss = criterion(output, bag_msk)
+            loss = criterion(output*(1-nc), bag_msk*(1-nc))
             loss.backward()
             iter_loss = loss.item()
             all_train_iter_loss.append(iter_loss)
@@ -81,33 +113,23 @@ def train(epo_num=50, show_vgg_params=False):
 
             if np.mod(index, 50) == 0:
                 print('epoch {}, {}/{},train loss is {}'.format(epo, index, len(train_dataloader), iter_loss))
-                # vis.close()
-                # vis.images(output_np[:, None, :, :], win='train_pred', opts=dict(title='train prediction')) 
-                # vis.images(bag_msk_np[:, None, :, :], win='train_label', opts=dict(title='label'))
-                # vis.line(all_train_iter_loss, win='train_iter_loss',opts=dict(title='train iter loss'))
-
-                # plt.subplot(1, 2, 1) 
-                # plt.imshow(np.squeeze(bag_msk_np[0, ...]), 'gray')
-                # plt.subplot(1, 2, 2) 
-                # plt.imshow(np.squeeze(output_np[0, ...]), 'gray')
-                # plt.pause(0.5)
-                # plt.savefig("Result/"+str(index)+"_train.png")
-                cv2.imwrite("Result/"+str(index)+"_train.jpg",255*np.squeeze(output_np[0, ...]))
+                cv2.imwrite(TRAIN_RESULT+str(index)+"_train.jpg",255*np.squeeze(output_np[0, ...]))
 
         
         test_loss = 0
         fcn_model.eval()
         num_test=0
         with torch.no_grad():
-            for index, (bag, bag_msk) in enumerate(test_dataloader):
+            for index, (bag, bag_msk, nc) in enumerate(test_dataloader):
 
                 bag = bag.to(device)
                 bag_msk = bag_msk.to(device)
+                nc=nc.to(device)
 
                 optimizer.zero_grad()
                 output = fcn_model(bag)
                 output = torch.sigmoid(output) # output.shape is torch.Size([4, 2, 160, 160])
-                loss = criterion(output, bag_msk)
+                loss = criterion(output*(1-nc), bag_msk*(1-nc))
                 iter_loss = loss.item()
                 
                 test_loss += iter_loss
@@ -124,7 +146,7 @@ def train(epo_num=50, show_vgg_params=False):
                     # plt.imshow(np.squeeze(output_np[0, ...]), 'gray')
                     # plt.pause(0.5)
                     # plt.savefig("Result/"+str(index)+"_test.png")
-                    cv2.imwrite("Result/"+str(index)+"_test.jpg",255*np.squeeze(output_np[0, ...]))
+                    cv2.imwrite(TRAIN_RESULT+str(index)+"_test.jpg",255*np.squeeze(output_np[0, ...]))
         all_test_iter_loss.append(test_loss/num_test)
 
         cur_time = datetime.now()
@@ -140,7 +162,7 @@ def train(epo_num=50, show_vgg_params=False):
 
         # if np.mod(epo+1, 10) == 0:
             #torch.save(fcn_model, 'checkpoints/fcn_model_{}.pt'.format(epo+1))
-        torch.save(fcn_model.state_dict(), 'model_test/fcn_0.001_{0}.model'.format(epo))
+        torch.save(fcn_model.state_dict(), 'model_fpn/fcn_{0}.model'.format(epo))
         #torch.save(fcn_model, 'model/fcn_{0}.model'.format(epo+1))
         print('saveing model/fcn_{0}.model'.format(epo))
         # scheduler.step()
@@ -148,4 +170,4 @@ def train(epo_num=50, show_vgg_params=False):
 
 if __name__ == "__main__":
 
-    train(epo_num=50, show_vgg_params=False)
+    train(epo_num=14, show_vgg_params=False)

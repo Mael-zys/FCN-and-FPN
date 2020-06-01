@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 from torchvision import models
 from torchvision.models.vgg import VGG
-
+import cv2
+import numpy as np
 
 class FCN32s(nn.Module):
 
@@ -116,7 +117,7 @@ class FCNs(nn.Module):
         self.n_class = n_class
         self.pretrained_net = pretrained_net
         self.relu    = nn.ReLU(inplace=True)
-        self.deconv1 = nn.ConvTranspose2d(512, 512, kernel_size=3, stride=2, padding=(0,1), dilation=1, output_padding=(0,1))
+        self.deconv1 = nn.ConvTranspose2d(512, 512, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
         self.bn1     = nn.BatchNorm2d(512)
         self.deconv2 = nn.ConvTranspose2d(512, 256, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
         self.bn2     = nn.BatchNorm2d(256)
@@ -136,7 +137,14 @@ class FCNs(nn.Module):
         x3 = output['x3']  
         x2 = output['x2']  
         x1 = output['x1']  
-        
+        ##print(x5.shape)
+        # aaa=x1.cpu().detach().numpy()
+        # aaa=np.array(aaa)
+        # #print(aaa.shape)
+        # bbb=aaa[0]
+        # bbb = cv2.cvtColor(bbb[0], cv2.COLOR_GRAY2RGB)
+        # #print(bbb.shape)
+        # cv2.imwrite("alalal.jpg",bbb)
         score = self.bn1(self.relu(self.deconv1(x5)))   
         #print("size of x5 is {}, deconv of x5 is {}, x4 is {}".format(x5.shape,score.shape,x4.shape))  
         score = score + x4                                
